@@ -1,0 +1,6 @@
+﻿services:
+  zipsplitterworker:
+    image: zipsplitterworker
+    build:
+      context: .
+      dockerfile: ZipSplitterWorker/Dockerfile
