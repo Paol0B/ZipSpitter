@@ -2,12 +2,12 @@ using Serilog;
 using ZipSplitterWorker;
 using ILogger = Serilog.ILogger;
 
-var builder = Host.CreateApplicationBuilder(args);
+HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 
 // Configure Serilog to write logs to both console and file
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
-    .WriteTo.File($"logs/log{DateOnly.FromDateTime(DateTime.Today)}.txt", rollingInterval: RollingInterval.Day)
+    .WriteTo.File($"logs/log{DateTimeOffset.UtcNow:yyyy-MM-dd}.txt")
     .CreateLogger();
 
 builder.Logging.ClearProviders();
