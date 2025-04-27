@@ -7,7 +7,7 @@ HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 // Configure Serilog to write logs to both console and file
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
-    .WriteTo.File($"logs/log{DateTimeOffset.UtcNow:yyyy-MM-dd}.txt")
+    .WriteTo.File($"logs/log{DateTimeOffset.UtcNow:yyyy-MM-dd}.log")
     .CreateLogger();
 
 builder.Logging.ClearProviders();

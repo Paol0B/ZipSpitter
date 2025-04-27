@@ -1,10 +1,11 @@
 using System.IO.Compression;
+using ILogger = Serilog.ILogger;
 
 namespace ZipSplitterWorker;
 
-public class Worker(Serilog.ILogger logger, string zipFilesPath) : BackgroundService
+public class Worker(ILogger logger, string zipFilesPath) : BackgroundService
 {
-    private string ZipFilesPath { get; set; } = zipFilesPath;
+    private string ZipFilesPath { get; } = zipFilesPath;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -13,16 +14,10 @@ public class Worker(Serilog.ILogger logger, string zipFilesPath) : BackgroundSer
         {
             try
             {
-
-
                 if (!string.IsNullOrWhiteSpace(ZipFilesPath) && Directory.Exists(ZipFilesPath))
-                {
                     ProcessZipFiles(ZipFilesPath);
-                }
                 else
-                {
                     logger.Warning("Invalid path or directory does not exist.");
-                }
             }
             catch (Exception ex)
             {
@@ -38,11 +33,10 @@ public class Worker(Serilog.ILogger logger, string zipFilesPath) : BackgroundSer
         var zipFiles = Directory.GetFiles(directoryPath, "*.zip");
 
         foreach (var zipFile in zipFiles)
-        {
             try
             {
-                string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(zipFile);
-                string finalFolder = Path.Combine(directoryPath, $"{fileNameWithoutExtension}-Folder");
+                var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(zipFile);
+                var finalFolder = Path.Combine(directoryPath, $"{fileNameWithoutExtension}-Folder");
 
                 logger.Information($"Processing {zipFile}...");
 
@@ -51,9 +45,10 @@ public class Worker(Serilog.ILogger logger, string zipFilesPath) : BackgroundSer
                 logger.Information($"Extracted {zipFile} into final folder: {finalFolder}");
 
                 // Step 2: Create split zip files from the final folder
-                CreateSplitZip(finalFolder, Path.Combine(finalFolder, $"{fileNameWithoutExtension}.part"), 100 * 1024 * 1024);
+                CreateSplitZip(finalFolder, Path.Combine(finalFolder, $"{fileNameWithoutExtension}.part"),
+                    100 * 1024 * 1024);
                 logger.Information($"Created split zip files for {zipFile}");
-                
+
                 // Step 3: Delete old filee
                 File.Delete(zipFile);
                 Directory.Delete(Path.Combine(finalFolder, fileNameWithoutExtension), true);
@@ -63,117 +58,112 @@ public class Worker(Serilog.ILogger logger, string zipFilesPath) : BackgroundSer
             {
                 logger.Error(ex, $"An error occurred while processing {zipFile}");
             }
+    }
+
+    private static void ExtractZipFileRecursively(string zipFilePath, string destinationFolder)
+    {
+        if (!Directory.Exists(destinationFolder)) Directory.CreateDirectory(destinationFolder);
+
+        using var archive = ZipFile.OpenRead(zipFilePath);
+        foreach (var entry in archive.Entries)
+        {
+            var entryPath = Path.Combine(destinationFolder, entry.FullName);
+
+            if (string.IsNullOrEmpty(entry.Name)) // It's a directory
+            {
+                Directory.CreateDirectory(entryPath);
+            }
+            else
+            {
+                var entryDir = Path.GetDirectoryName(entryPath)!;
+                if (!Directory.Exists(entryDir))
+                    Directory.CreateDirectory(entryDir);
+
+                entry.ExtractToFile(entryPath, true);
+
+                // If the extracted file is another ZIP, process it recursively
+                if (Path.GetExtension(entryPath).Equals(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    var nestedDestination = Path.Combine(destinationFolder,
+                        Path.GetFileNameWithoutExtension(entry.FullName));
+                    ExtractZipFileRecursively(entryPath, nestedDestination);
+
+                    // Delete the nested zip file after extraction
+                    File.Delete(entryPath);
+                }
+            }
         }
     }
 
-    private void ExtractZipFileRecursively(string zipFilePath, string destinationFolder)
+    private static void CreateSplitZip(string sourceDir, string outputFilePrefix, long partSizeBytes)
     {
-        if (!Directory.Exists(destinationFolder))
-        {
-            Directory.CreateDirectory(destinationFolder);
-        }
+        var files = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories);
+        var partNumber = 1;
+        long currentPartSize = 0;
+        FileStream? partFile = null;
+        ZipArchive? partArchive = null;
 
-        using (var archive = ZipFile.OpenRead(zipFilePath))
+        foreach (var file in files)
         {
-            foreach (var entry in archive.Entries)
+            var fileInfo = new FileInfo(file);
+
+            // Se il file è più grande del partSizeBytes, va in un part da solo
+            if (fileInfo.Length > partSizeBytes)
             {
-                string entryPath = Path.Combine(destinationFolder, entry.FullName);
-
-                if (string.IsNullOrEmpty(entry.Name)) // It's a directory
+                // Chiudi il part corrente
+                partArchive?.Dispose();
+                partFile?.Dispose();
+                var partFileName = $"{outputFilePrefix}{partNumber}.zip";
+                using (var largeFile = new FileStream(partFileName, FileMode.Create, FileAccess.Write))
+                using (var largeArchive = new ZipArchive(largeFile, ZipArchiveMode.Create))
                 {
-                    Directory.CreateDirectory(entryPath);
-                }
-                else
-                {
-                    string entryDir = Path.GetDirectoryName(entryPath)!;
-                    if (!Directory.Exists(entryDir))
-                        Directory.CreateDirectory(entryDir);
-
-                    entry.ExtractToFile(entryPath, overwrite: true);
-
-                    // If the extracted file is another ZIP, process it recursively
-                    if (Path.GetExtension(entryPath).Equals(".zip", StringComparison.OrdinalIgnoreCase))
+                    var relativePath = Path.GetRelativePath(sourceDir, file);
+                    var entry = largeArchive.CreateEntry(relativePath);
+                    using (var entryStream = entry.Open())
+                    using (var fileStream = new FileStream(file, FileMode.Open, FileAccess.Read))
                     {
-                        string nestedDestination = Path.Combine(destinationFolder, Path.GetFileNameWithoutExtension(entry.FullName));
-                        ExtractZipFileRecursively(entryPath, nestedDestination);
-
-                        // Delete the nested zip file after extraction
-                        File.Delete(entryPath);
+                        fileStream.CopyTo(entryStream);
                     }
                 }
+
+                partNumber++;
+                currentPartSize = 0;
+                partArchive = null;
+                partFile = null;
+                continue;
             }
-        }
-    }
 
- private static void CreateSplitZip(string sourceDir, string outputFilePrefix, long partSizeBytes)
-{
-    var files = Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories);
-    int partNumber = 1;
-    long currentPartSize = 0;
-    FileStream? partFile = null;
-    ZipArchive? partArchive = null;
-
-    foreach (var file in files)
-    {
-        var fileInfo = new FileInfo(file);
-
-        // Se il file è più grande del partSizeBytes, va in un part da solo
-        if (fileInfo.Length > partSizeBytes)
-        {
-            // Chiudi il part corrente
-            partArchive?.Dispose();
-            partFile?.Dispose();
-            string partFileName = $"{outputFilePrefix}{partNumber}.zip";
-            using (var largeFile = new FileStream(partFileName, FileMode.Create, FileAccess.Write))
-            using (var largeArchive = new ZipArchive(largeFile, ZipArchiveMode.Create))
+            // Se aggiungere il file corrente sfora il limite, chiudi il part corrente
+            if (currentPartSize + fileInfo.Length > partSizeBytes)
             {
-                string relativePath = Path.GetRelativePath(sourceDir, file);
-                var entry = largeArchive.CreateEntry(relativePath);
-                using (var entryStream = entry.Open())
-                using (var fileStream = new FileStream(file, FileMode.Open, FileAccess.Read))
-                {
-                    fileStream.CopyTo(entryStream);
-                }
+                partArchive?.Dispose();
+                partFile?.Dispose();
+                partNumber++;
+                currentPartSize = 0;
             }
-            partNumber++;
-            currentPartSize = 0;
-            partArchive = null;
-            partFile = null;
-            continue;
+
+            // Se non esiste ancora, apri un nuovo part
+            if (currentPartSize == 0)
+            {
+                var partFileName = $"{outputFilePrefix}{partNumber}.zip";
+                partFile = new FileStream(partFileName, FileMode.Create, FileAccess.Write);
+                partArchive = new ZipArchive(partFile, ZipArchiveMode.Create);
+            }
+
+            // Aggiungi il file al part corrente
+            var relPath = Path.GetRelativePath(sourceDir, file);
+            var zipEntry = partArchive!.CreateEntry(relPath);
+            using (var entryStream = zipEntry.Open())
+            using (var fileStream = new FileStream(file, FileMode.Open, FileAccess.Read))
+            {
+                fileStream.CopyTo(entryStream);
+            }
+
+            currentPartSize += fileInfo.Length;
         }
 
-        // Se aggiungere il file corrente sfora il limite, chiudi il part corrente
-        if (currentPartSize + fileInfo.Length > partSizeBytes)
-        {
-            partArchive?.Dispose();
-            partFile?.Dispose();
-            partNumber++;
-            currentPartSize = 0;
-        }
-
-        // Se non esiste ancora, apri un nuovo part
-        if (currentPartSize == 0)
-        {
-            string partFileName = $"{outputFilePrefix}{partNumber}.zip";
-            partFile = new FileStream(partFileName, FileMode.Create, FileAccess.Write);
-            partArchive = new ZipArchive(partFile, ZipArchiveMode.Create);
-        }
-
-        // Aggiungi il file al part corrente
-        string relPath = Path.GetRelativePath(sourceDir, file);
-        var zipEntry = partArchive!.CreateEntry(relPath);
-        using (var entryStream = zipEntry.Open())
-        using (var fileStream = new FileStream(file, FileMode.Open, FileAccess.Read))
-        {
-            fileStream.CopyTo(entryStream);
-        }
-
-        currentPartSize += fileInfo.Length;
+        // Chiudi l'ultimo part
+        partArchive?.Dispose();
+        partFile?.Dispose();
     }
-
-    // Chiudi l'ultimo part
-    partArchive?.Dispose();
-    partFile?.Dispose();
-}
-
 }
