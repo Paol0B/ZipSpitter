@@ -28,7 +28,6 @@ builder.Services.AddSingleton(logger);
 
 builder.Services.AddHostedService<Worker>(provider => new Worker(provider.GetRequiredService<ILogger>(), zipFilesPath));
 
-
 var app = builder.Build();
 
 try
